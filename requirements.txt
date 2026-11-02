@@ -1,0 +1,4 @@
+PySide6
+docxtpl
+python-docx
+pywin32

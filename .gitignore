@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.log
+
+# Môi trường Python
+venv/
+.venv/
+env/
+
+# Cơ sở dữ liệu
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# File được chương trình tạo ra
+output/
+edited/
+preview/
+
+# Thông tin cấu hình riêng
+.env
+
+# File hệ thống
+.DS_Store
+Thumbs.db
