@@ -40,6 +40,7 @@ def create_database():
 
     conn.commit()
     conn.close()
+    create_template_tables()
 
 
 def save_profile(data, profile_id=None):
@@ -182,3 +183,59 @@ if __name__ == "__main__":
     create_database()
 
     print("Đã khởi tạo cơ sở dữ liệu AUTO FORM!")
+
+
+# Thu vien bieu mau: chi xoa ban ghi, khong xoa tep Word.
+def create_template_tables():
+    with connect() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS template_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE)")
+        conn.execute("CREATE TABLE IF NOT EXISTS templates (id INTEGER PRIMARY KEY AUTOINCREMENT, category_id INTEGER NOT NULL, name TEXT NOT NULL, file_path TEXT NOT NULL, UNIQUE(category_id,name))")
+        conn.execute("CREATE TABLE IF NOT EXISTS app_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)")
+
+def get_template_categories():
+    with connect() as conn:
+        return conn.execute("SELECT id,name FROM template_categories ORDER BY name COLLATE NOCASE").fetchall()
+
+def add_template_category(name):
+    with connect() as conn:
+        conn.execute("INSERT INTO template_categories(name) VALUES(?)", (name,))
+
+def rename_template_category(category_id, name):
+    with connect() as conn:
+        conn.execute("UPDATE template_categories SET name=? WHERE id=?", (name,category_id))
+
+def delete_template_category(category_id):
+    with connect() as conn:
+        conn.execute("DELETE FROM templates WHERE category_id=?", (category_id,))
+        conn.execute("DELETE FROM template_categories WHERE id=?", (category_id,))
+
+def get_templates(category_id=None):
+    with connect() as conn:
+        if category_id is None:
+            return conn.execute("SELECT id,category_id,name,file_path FROM templates ORDER BY name COLLATE NOCASE").fetchall()
+        return conn.execute("SELECT id,category_id,name,file_path FROM templates WHERE category_id=? ORDER BY name COLLATE NOCASE",(category_id,)).fetchall()
+
+def add_template(category_id,name,file_path):
+    with connect() as conn:
+        conn.execute("INSERT INTO templates(category_id,name,file_path) VALUES(?,?,?)",(category_id,name,file_path))
+
+def rename_template(template_id,name):
+    with connect() as conn:
+        conn.execute("UPDATE templates SET name=? WHERE id=?",(name,template_id))
+
+def replace_template_file(template_id,path):
+    with connect() as conn:
+        conn.execute("UPDATE templates SET file_path=? WHERE id=?",(path,template_id))
+
+def delete_template(template_id):
+    with connect() as conn:
+        conn.execute("DELETE FROM templates WHERE id=?",(template_id,))
+
+def get_setting(key):
+    with connect() as conn:
+        row=conn.execute("SELECT setting_value FROM app_settings WHERE setting_key=?",(key,)).fetchone()
+        return row[0] if row else None
+
+def set_setting(key,value):
+    with connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO app_settings(setting_key,setting_value) VALUES(?,?)",(key,value))

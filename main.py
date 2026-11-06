@@ -4,6 +4,10 @@ import os
 import win32com.client
 import shutil
 import re
+import hashlib
+import secrets
+import sqlite3
+import uuid
 
 from docx import Document as WordDocument
 from docx.text.paragraph import Paragraph
@@ -16,10 +20,13 @@ from PySide6.QtWidgets import QDialog
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtCore import Qt,QTimer
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QMessageBox,
-    QFormLayout, QListWidget, QScrollArea,QSizePolicy
+    QFormLayout, QListWidget, QScrollArea, QSizePolicy,
+    QFrame, QGridLayout, QTabWidget, QCheckBox, QInputDialog,
+    QDialogButtonBox, QListWidgetItem
 )
 
 from docxtpl import DocxTemplate
@@ -36,6 +43,7 @@ except ImportError:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+TEMPLATE_LIBRARY_DIR = os.path.join(BASE_DIR, "template_library")
 
 
 class AutoForm(QMainWindow):
@@ -48,7 +56,7 @@ class AutoForm(QMainWindow):
         self.word_app = None
         self.word_doc = None
         self.editing_file = None
-
+        self.editing_template_name = None
         self.edited_files = {}
         self.template_paths = []
         self.fields = {}
@@ -56,170 +64,657 @@ class AutoForm(QMainWindow):
         # Bộ hẹn giờ tự động lưu
         
         database.create_database()
+        os.makedirs(TEMPLATE_LIBRARY_DIR, exist_ok=True)
 
         self.init_ui()
         self.refresh_profiles()
 
+
+    def apply_dark_theme(self):
+
+        self.setStyleSheet("""
+            QMainWindow, QWidget {
+                background-color: #111827;
+                color: #E5E7EB;
+                font-family: "Segoe UI";
+                font-size: 10pt;
+            }
+
+            QFrame#sidebar {
+                background-color: #0B1220;
+                border-right: 1px solid #263449;
+            }
+
+            QFrame#card {
+                background-color: #1B2638;
+                border: 1px solid #2D3B50;
+                border-radius: 12px;
+            }
+
+            QLabel#brand {
+                color: #60A5FA;
+                font-size: 23px;
+                font-weight: bold;
+            }
+
+            QLabel#pageTitle {
+                color: #F9FAFB;
+                font-size: 25px;
+                font-weight: bold;
+            }
+
+            QLabel#sectionTitle {
+                color: #F3F4F6;
+                font-size: 15px;
+                font-weight: bold;
+            }
+
+            QLabel#muted {
+                color: #94A3B8;
+                font-size: 9pt;
+            }
+
+            QLineEdit {
+                background-color: #111C2D;
+                color: #F9FAFB;
+                border: 1px solid #3B4B63;
+                border-radius: 7px;
+                padding: 10px;
+                selection-background-color: #2563EB;
+            }
+
+            QLineEdit:focus {
+                border: 1px solid #3B82F6;
+            }
+
+            QListWidget {
+                background-color: #111C2D;
+                color: #E5E7EB;
+                border: 1px solid #34445C;
+                border-radius: 8px;
+                padding: 5px;
+                outline: none;
+            }
+
+            QListWidget::item {
+                padding: 9px;
+                border-radius: 5px;
+            }
+
+            QListWidget::item:selected {
+                background-color: #1D4ED8;
+                color: white;
+            }
+
+            QPushButton {
+                background-color: #334155;
+                color: #F8FAFC;
+                border: none;
+                border-radius: 7px;
+                padding: 10px 14px;
+                font-weight: bold;
+            }
+
+            QPushButton:hover {
+                background-color: #475569;
+            }
+
+            QPushButton:pressed {
+                background-color: #1E293B;
+            }
+
+            QPushButton:disabled {
+                background-color: #263449;
+                color: #718096;
+            }
+
+            QPushButton#primaryButton {
+                background-color: #2563EB;
+                color: white;
+                font-size: 11pt;
+                padding: 13px;
+            }
+
+            QPushButton#primaryButton:hover {
+                background-color: #1D4ED8;
+            }
+
+            QPushButton#secondaryButton {
+                background-color: #1E3A5F;
+                color: #93C5FD;
+            }
+
+            QPushButton#secondaryButton:hover {
+                background-color: #254B78;
+            }
+
+            QPushButton#dangerButton {
+                background-color: #7F1D1D;
+                color: #FECACA;
+            }
+
+            QPushButton#dangerButton:hover {
+                background-color: #991B1B;
+            }
+
+            QScrollArea {
+                border: none;
+                background-color: #111827;
+            }
+
+            QScrollBar:vertical {
+                background: #111827;
+                width: 10px;
+                margin: 0;
+            }
+
+            QScrollBar::handle:vertical {
+                background: #475569;
+                border-radius: 5px;
+                min-height: 25px;
+            }
+
+            QScrollBar::handle:vertical:hover {
+                background: #64748B;
+            }
+
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+
+            QFormLayout {
+                spacing: 12px;
+            }
+        """)
+
+    def create_card(self):
+
+        card = QFrame()
+        card.setObjectName("card")
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        return card, layout
+
     def init_ui(self):
 
-        main_layout = QVBoxLayout()
+        self.apply_dark_theme()
 
-        title = QLabel("AUTO FORM")
-        title.setStyleSheet(
-            "font-size: 28px; font-weight: bold; color: #2463a6;"
-        )
+        # ==========================================
+        # GIAO DIỆN TỔNG THỂ
+        # ==========================================
+
+        root = QWidget()
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # ==========================================
+        # THANH BÊN TRÁI
+        # ==========================================
+
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(210)
+
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(18, 25, 18, 20)
+        sidebar_layout.setSpacing(15)
+
+        brand = QLabel("AUTO FORM")
+        brand.setObjectName("brand")
+
+        brand_subtitle = QLabel("DOCUMENT MANAGEMENT")
+        brand_subtitle.setObjectName("muted")
+
+        sidebar_layout.addWidget(brand)
+        sidebar_layout.addWidget(brand_subtitle)
+        sidebar_layout.addSpacing(25)
+
+        menu_title = QLabel("KHÔNG GIAN LÀM VIỆC")
+        menu_title.setObjectName("muted")
+
+        sidebar_layout.addWidget(menu_title)
+
+        sidebar_items = [
+            "▣   Quản lý hồ sơ",
+            "▤   Biểu mẫu Word",
+            "▧   Nhập thông tin",
+            "✓   Xuất tài liệu"
+        ]
+
+        for item_text in sidebar_items:
+
+            item = QLabel(item_text)
+            item.setStyleSheet("""
+                color: #CBD5E1;
+                padding: 10px 5px;
+                font-size: 10pt;
+            """)
+
+            sidebar_layout.addWidget(item)
+
+        sidebar_layout.addStretch()
+
+        version = QLabel("AUTO FORM\nVersion 1.0")
+        version.setObjectName("muted")
+        sidebar_layout.addWidget(version)
+
+        root_layout.addWidget(sidebar)
+
+        # ==========================================
+        # KHU VỰC NỘI DUNG CHÍNH
+        # ==========================================
+
+        content_widget = QWidget()
+
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(25, 22, 25, 25)
+        content_layout.setSpacing(18)
+
+        # ==========================================
+        # HEADER
+        # ==========================================
+
+        header_layout = QHBoxLayout()
+
+        header_text_layout = QVBoxLayout()
+
+        title = QLabel("Bảng điều khiển")
+        title.setObjectName("pageTitle")
 
         subtitle = QLabel(
-            "Nhập dữ liệu, quản lý hồ sơ và tạo nhiều biểu mẫu Word tự động"
+            "Quản lý hồ sơ và tự động hóa biểu mẫu Word"
         )
+        subtitle.setObjectName("muted")
 
-        btn_refresh = QPushButton("REFRESH")
+        header_text_layout.addWidget(title)
+        header_text_layout.addWidget(subtitle)
+
+        header_layout.addLayout(header_text_layout)
+        header_layout.addStretch()
+
+        btn_refresh = QPushButton("↻  LÀM MỚI")
+        btn_refresh.setObjectName("secondaryButton")
         btn_refresh.clicked.connect(self.refresh_form)
 
-        # QUẢN LÝ HỒ SƠ
-        profile_title = QLabel("QUẢN LÝ HỒ SƠ CÁ NHÂN")
-        profile_title.setStyleSheet(
-            "font-size: 18px; font-weight: bold;"
+        header_layout.addWidget(btn_refresh)
+
+        content_layout.addLayout(header_layout)
+
+        # ==========================================
+        # THẺ QUẢN LÝ HỒ SƠ
+        # ==========================================
+
+        profile_card, profile_layout = self.create_card()
+
+        profile_title = QLabel("01  |  QUẢN LÝ HỒ SƠ CÁ NHÂN")
+        profile_title.setObjectName("sectionTitle")
+
+        profile_description = QLabel(
+            "Tìm kiếm, sử dụng và quản lý thông tin hồ sơ"
         )
+        profile_description.setObjectName("muted")
 
         self.profile_search = QLineEdit()
         self.profile_search.setPlaceholderText(
             "Tìm kiếm theo họ tên hoặc số CCCD..."
         )
-        self.profile_search.textChanged.connect(self.refresh_profiles)
+        self.profile_search.textChanged.connect(
+            self.refresh_profiles
+        )
 
         self.profile_list = QListWidget()
-        self.profile_list.setMaximumHeight(85)
+        self.profile_list.setMinimumHeight(105)
+        self.profile_list.setMaximumHeight(145)
 
         btn_load = QPushButton("SỬ DỤNG HỒ SƠ")
+        btn_load.setObjectName("primaryButton")
         btn_load.clicked.connect(self.load_selected_profile)
 
-        btn_save = QPushButton("LƯU / CẬP NHẬT HỒ SƠ")
-        btn_save.clicked.connect(self.save_current_profile)
-
-        btn_new = QPushButton("TẠO HỒ SƠ MỚI")
+        btn_new = QPushButton("TẠO MỚI")
         btn_new.clicked.connect(self.create_new_profile)
 
+        btn_save = QPushButton("LƯU / CẬP NHẬT")
+        btn_save.setObjectName("secondaryButton")
+        btn_save.clicked.connect(self.save_current_profile)
+
         btn_delete = QPushButton("XÓA HỒ SƠ")
+        btn_delete.setObjectName("dangerButton")
         btn_delete.clicked.connect(self.delete_selected_profile)
 
-        profile_buttons = QHBoxLayout()
-        profile_buttons.addWidget(btn_load)
-        profile_buttons.addWidget(btn_new)
-        profile_buttons.addWidget(btn_save)
-        profile_buttons.addWidget(btn_delete)
-        profile_buttons.addWidget(btn_refresh)
+        profile_buttons = QGridLayout()
+        profile_buttons.setSpacing(8)
 
-        # CHỌN BIỂU MẪU
-        btn_select = QPushButton("CHỌN NHIỀU BIỂU MẪU WORD")
+        profile_buttons.addWidget(btn_load, 0, 0)
+        profile_buttons.addWidget(btn_new, 0, 1)
+        profile_buttons.addWidget(btn_save, 1, 0)
+        profile_buttons.addWidget(btn_delete, 1, 1)
+
+        profile_layout.addWidget(profile_title)
+        profile_layout.addWidget(profile_description)
+        profile_layout.addWidget(self.profile_search)
+        profile_layout.addWidget(self.profile_list)
+        profile_layout.addLayout(profile_buttons)
+
+        content_layout.addWidget(profile_card)
+
+        # ==========================================
+        # THẺ BIỂU MẪU WORD
+        # ==========================================
+
+        template_card, template_layout = self.create_card()
+
+        template_title = QLabel("02  |  QUẢN LÝ BIỂU MẪU WORD")
+        template_title.setObjectName("sectionTitle")
+
+        template_description = QLabel(
+            "Chọn một hoặc nhiều biểu mẫu để điền thông tin tự động"
+        )
+        template_description.setObjectName("muted")
+
+        btn_select = QPushButton("+  CHỌN NHIỀU BIỂU MẪU WORD")
+        btn_select.setObjectName("secondaryButton")
         btn_select.clicked.connect(self.select_templates)
 
-        self.file_list = QListWidget()
-        self.file_list.setMinimumHeight(75)
-
         self.file_label = QLabel("Chưa chọn biểu mẫu nào")
+        self.file_label.setObjectName("muted")
 
-        # NHẬP THÔNG TIN
-        form_title = QLabel("THÔNG TIN CẦN NHẬP")
-        form_title.setStyleSheet(
-            "font-size: 18px; font-weight: bold;"
+        self.file_list = QListWidget()
+        self.file_list.setMinimumHeight(90)
+        self.file_list.setMaximumHeight(130)
+
+        btn_preview = QPushButton("XEM TRƯỚC PDF")
+        btn_preview.clicked.connect(
+            self.preview_selected_template
         )
-
-    
-
-        self.form_layout = QFormLayout()
-
-        self.form_widget = QWidget()
-        self.form_widget.setLayout(self.form_layout)
-
-        # Cho phép khu vực nhập liệu mở rộng theo nội dung
-        self.form_widget.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Minimum
-        )
-
-        # XUẤT WORD
-        btn_generate = QPushButton("TẠO TẤT CẢ BIỂU MẪU WORD")
-        self.btn_edit_word = QPushButton("Chỉnh sửa bằng Microsoft Word")
-        self.btn_finish_edit = QPushButton("Hoàn tất chỉnh sửa")
-
-        self.btn_edit_word.clicked.connect(self.edit_selected_template)
-        self.btn_finish_edit.clicked.connect(self.finish_word_edit)
-
-        self.btn_finish_edit.setEnabled(False)
-
-        main_layout.addWidget(self.btn_edit_word)
-        main_layout.addWidget(self.btn_finish_edit)
-        btn_generate.setMinimumHeight(45)
-
-        btn_generate.setStyleSheet("""
-            QPushButton {
-                background-color: #2463a6;
-                color: white;
-                font-weight: bold;
-                font-size: 15px;
-                border-radius: 6px;
-                padding: 10px;
-            }
-            QPushButton:hover {
-                background-color: #174b82;
-            }
-        """)
-
-        btn_generate.clicked.connect(self.generate_word)
-
-       # SẮP XẾP TOÀN BỘ GIAO DIỆN
-        main_layout.addWidget(title)
-        main_layout.addWidget(subtitle)
-        main_layout.addSpacing(10)
-
-        main_layout.addWidget(profile_title)
-        main_layout.addWidget(self.profile_search)
-        main_layout.addWidget(self.profile_list)
-        main_layout.addLayout(profile_buttons)
-
-        main_layout.addSpacing(15)
-
-        main_layout.addWidget(btn_select)
-        main_layout.addWidget(self.file_label)
-        main_layout.addWidget(self.file_list)
-        # Nút xem trước biểu mẫu
-        btn_preview = QPushButton("XEM TRƯỚC BIỂU MẪU ĐANG CHỌN")
-        btn_preview.setMinimumHeight(40)
-        btn_preview.clicked.connect(self.preview_selected_template)
 
         self.file_list.itemDoubleClicked.connect(
             self.preview_selected_template
         )
 
-        main_layout.addWidget(btn_preview)
-        main_layout.addWidget(form_title)
-        # Đưa toàn bộ các ô nhập liệu vào giao diện
-        main_layout.addWidget(self.form_widget)
+        template_layout.addWidget(template_title)
+        template_layout.addWidget(template_description)
+        template_layout.addWidget(btn_select)
+        btn_manager = QPushButton("⚙ QUẢN LÝ THƯ VIỆN (QUẢN TRỊ)")
+        btn_manager.clicked.connect(self.open_template_manager)
+        template_layout.addWidget(btn_manager)
+        template_layout.addWidget(self.file_label)
+        template_layout.addWidget(self.file_list)
+        template_layout.addWidget(btn_preview)
 
-        main_layout.addSpacing(15)
-        main_layout.addWidget(btn_generate)
+        content_layout.addWidget(template_card)
 
-        # Tạo nội dung toàn bộ ứng dụng
-        container = QWidget()
-        container.setLayout(main_layout)
+        # ==========================================
+        # THẺ NHẬP THÔNG TIN
+        # ==========================================
 
-        # Tạo thanh cuộn cho toàn bộ ứng dụng
+        form_card, form_card_layout = self.create_card()
+
+        form_title = QLabel("03  |  THÔNG TIN CẦN NHẬP")
+        form_title.setObjectName("sectionTitle")
+
+        form_description = QLabel(
+            "Nhập dữ liệu để điền vào các vị trí tương ứng trong biểu mẫu"
+        )
+        form_description.setObjectName("muted")
+
+        self.form_layout = QFormLayout()
+        self.form_layout.setContentsMargins(0, 5, 0, 5)
+        self.form_layout.setHorizontalSpacing(18)
+        self.form_layout.setVerticalSpacing(14)
+        self.form_layout.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft |
+            Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self.form_widget = QWidget()
+        self.form_widget.setLayout(self.form_layout)
+
+        self.form_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum
+        )
+
+        form_card_layout.addWidget(form_title)
+        form_card_layout.addWidget(form_description)
+        form_card_layout.addWidget(self.form_widget)
+
+        content_layout.addWidget(form_card)
+
+        # ==========================================
+        # THẺ CHỈNH SỬA VÀ XUẤT WORD
+        # ==========================================
+
+        export_card, export_layout = self.create_card()
+
+        export_title = QLabel("04  |  XỬ LÝ VÀ XUẤT TÀI LIỆU")
+        export_title.setObjectName("sectionTitle")
+
+        export_description = QLabel(
+            "Chỉnh sửa trực tiếp bằng Microsoft Word hoặc xuất hàng loạt"
+        )
+        export_description.setObjectName("muted")
+
+        self.btn_edit_word = QPushButton(
+            "CHỈNH SỬA BẰNG MICROSOFT WORD"
+        )
+        self.btn_edit_word.setObjectName("secondaryButton")
+        self.btn_edit_word.clicked.connect(
+            self.edit_selected_template
+
+        )
+
+        self.btn_finish_edit = QPushButton(
+            "HOÀN TẤT CHỈNH SỬA"
+        )
+        self.btn_finish_edit.clicked.connect(
+            self.finish_word_edit
+        )
+        self.btn_finish_edit.setEnabled(False)
+
+        btn_generate = QPushButton(
+            "TẠO TẤT CẢ BIỂU MẪU WORD"
+        )
+        btn_generate.setObjectName("primaryButton")
+        btn_generate.setMinimumHeight(50)
+        btn_generate.clicked.connect(self.generate_word)
+
+        export_layout.addWidget(export_title)
+        export_layout.addWidget(export_description)
+        export_layout.addWidget(self.btn_edit_word)
+        export_layout.addWidget(self.btn_finish_edit)
+        export_layout.addSpacing(5)
+        export_layout.addWidget(btn_generate)
+
+        content_layout.addWidget(export_card)
+
+        content_layout.addStretch()
+
+        # ==========================================
+        # THANH CUỘN NỘI DUNG
+        # ==========================================
+
         self.main_scroll = QScrollArea()
         self.main_scroll.setWidgetResizable(True)
-
+        self.main_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.main_scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
+        self.main_scroll.setWidget(content_widget)
 
-        self.main_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
+        root_layout.addWidget(self.main_scroll)
 
-        self.main_scroll.setWidget(container)
+        self.setCentralWidget(root)
 
-        # Đặt thanh cuộn làm giao diện chính
-        self.setCentralWidget(self.main_scroll)
+
+
+
+    # def init_ui(self):
+
+    #     main_layout = QVBoxLayout()
+
+    #     title = QLabel("AUTO FORM")
+    #     title.setStyleSheet(
+    #         "font-size: 28px; font-weight: bold; color: #2463a6;"
+    #     )
+
+    #     subtitle = QLabel(
+    #         "Nhập dữ liệu, quản lý hồ sơ và tạo nhiều biểu mẫu Word tự động"
+    #     )
+
+    #     btn_refresh = QPushButton("REFRESH")
+    #     btn_refresh.clicked.connect(self.refresh_form)
+
+    #     # QUẢN LÝ HỒ SƠ
+    #     profile_title = QLabel("QUẢN LÝ HỒ SƠ CÁ NHÂN")
+    #     profile_title.setStyleSheet(
+    #         "font-size: 18px; font-weight: bold;"
+    #     )
+
+    #     self.profile_search = QLineEdit()
+    #     self.profile_search.setPlaceholderText(
+    #         "Tìm kiếm theo họ tên hoặc số CCCD..."
+    #     )
+    #     self.profile_search.textChanged.connect(self.refresh_profiles)
+
+    #     self.profile_list = QListWidget()
+    #     self.profile_list.setMaximumHeight(85)
+
+    #     btn_load = QPushButton("SỬ DỤNG HỒ SƠ")
+    #     btn_load.clicked.connect(self.load_selected_profile)
+
+    #     btn_save = QPushButton("LƯU / CẬP NHẬT HỒ SƠ")
+    #     btn_save.clicked.connect(self.save_current_profile)
+
+    #     btn_new = QPushButton("TẠO HỒ SƠ MỚI")
+    #     btn_new.clicked.connect(self.create_new_profile)
+
+    #     btn_delete = QPushButton("XÓA HỒ SƠ")
+    #     btn_delete.clicked.connect(self.delete_selected_profile)
+
+    #     profile_buttons = QHBoxLayout()
+    #     profile_buttons.addWidget(btn_load)
+    #     profile_buttons.addWidget(btn_new)
+    #     profile_buttons.addWidget(btn_save)
+    #     profile_buttons.addWidget(btn_delete)
+    #     profile_buttons.addWidget(btn_refresh)
+
+    #     # CHỌN BIỂU MẪU
+    #     btn_select = QPushButton("CHỌN NHIỀU BIỂU MẪU WORD")
+    #     btn_select.clicked.connect(self.select_templates)
+
+    #     self.file_list = QListWidget()
+    #     self.file_list.setMinimumHeight(75)
+
+    #     self.file_label = QLabel("Chưa chọn biểu mẫu nào")
+
+    #     # NHẬP THÔNG TIN
+    #     form_title = QLabel("THÔNG TIN CẦN NHẬP")
+    #     form_title.setStyleSheet(
+    #         "font-size: 18px; font-weight: bold;"
+    #     )
+
+    
+
+    #     self.form_layout = QFormLayout()
+
+    #     self.form_widget = QWidget()
+    #     self.form_widget.setLayout(self.form_layout)
+
+    #     # Cho phép khu vực nhập liệu mở rộng theo nội dung
+    #     self.form_widget.setSizePolicy(
+    #         QSizePolicy.Policy.Expanding,
+    #         QSizePolicy.Policy.Minimum
+    #     )
+
+    #     # XUẤT WORD
+    #     btn_generate = QPushButton("TẠO TẤT CẢ BIỂU MẪU WORD")
+    #     self.btn_edit_word = QPushButton("Chỉnh sửa bằng Microsoft Word")
+    #     self.btn_finish_edit = QPushButton("Hoàn tất chỉnh sửa")
+
+    #     self.btn_edit_word.clicked.connect(self.edit_selected_template)
+    #     self.btn_finish_edit.clicked.connect(self.finish_word_edit)
+
+    #     self.btn_finish_edit.setEnabled(False)
+
+    #     main_layout.addWidget(self.btn_edit_word)
+    #     main_layout.addWidget(self.btn_finish_edit)
+    #     btn_generate.setMinimumHeight(45)
+
+    #     btn_generate.setStyleSheet("""
+    #         QPushButton {
+    #             background-color: #2463a6;
+    #             color: white;
+    #             font-weight: bold;
+    #             font-size: 15px;
+    #             border-radius: 6px;
+    #             padding: 10px;
+    #         }
+    #         QPushButton:hover {
+    #             background-color: #174b82;
+    #         }
+    #     """)
+
+    #     btn_generate.clicked.connect(self.generate_word)
+
+    #    # SẮP XẾP TOÀN BỘ GIAO DIỆN
+    #     main_layout.addWidget(title)
+    #     main_layout.addWidget(subtitle)
+    #     main_layout.addSpacing(10)
+
+    #     main_layout.addWidget(profile_title)
+    #     main_layout.addWidget(self.profile_search)
+    #     main_layout.addWidget(self.profile_list)
+    #     main_layout.addLayout(profile_buttons)
+
+    #     main_layout.addSpacing(15)
+
+    #     main_layout.addWidget(btn_select)
+    #     main_layout.addWidget(self.file_label)
+    #     main_layout.addWidget(self.file_list)
+    #     # Nút xem trước biểu mẫu
+    #     btn_preview = QPushButton("XEM TRƯỚC BIỂU MẪU ĐANG CHỌN")
+    #     btn_preview.setMinimumHeight(40)
+    #     btn_preview.clicked.connect(self.preview_selected_template)
+
+    #     self.file_list.itemDoubleClicked.connect(
+    #         self.preview_selected_template
+    #     )
+
+    #     main_layout.addWidget(btn_preview)
+    #     main_layout.addWidget(form_title)
+    #     # Đưa toàn bộ các ô nhập liệu vào giao diện
+    #     main_layout.addWidget(self.form_widget)
+
+    #     main_layout.addSpacing(15)
+    #     main_layout.addWidget(btn_generate)
+
+    #     # Tạo nội dung toàn bộ ứng dụng
+    #     container = QWidget()
+    #     container.setLayout(main_layout)
+
+    #     # Tạo thanh cuộn cho toàn bộ ứng dụng
+    #     self.main_scroll = QScrollArea()
+    #     self.main_scroll.setWidgetResizable(True)
+
+    #     self.main_scroll.setVerticalScrollBarPolicy(
+    #         Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    #     )
+
+    #     self.main_scroll.setHorizontalScrollBarPolicy(
+    #         Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    #     )
+
+    #     self.main_scroll.setWidget(container)
+
+    #     # Đặt thanh cuộn làm giao diện chính
+    #     self.setCentralWidget(self.main_scroll)
 
     # XÓA CÁC Ô NHẬP LIỆU CŨ
     def clear_form(self):
@@ -252,9 +747,10 @@ class AutoForm(QMainWindow):
             )
             return
 
+        selected_path = selected_item.data(Qt.ItemDataRole.UserRole)
         filename = selected_item.text()
 
-        template_path = next(
+        template_path = selected_path or next(
             (
                 p for p in self.template_paths
                 if os.path.basename(p) == filename
@@ -269,7 +765,8 @@ class AutoForm(QMainWindow):
                 "Không tìm thấy mẫu Word!"
             )
             return
-
+        if not self.check_form_data():
+            return
         try:
             data = self.collect_data()
 
@@ -296,6 +793,7 @@ class AutoForm(QMainWindow):
             )
 
             self.editing_file = edited_path
+            self.editing_template_name = os.path.basename(template_path)
             self.editing_template_name = os.path.basename(template_path)
             self.btn_edit_word.setEnabled(False)
             self.btn_finish_edit.setEnabled(True)
@@ -366,7 +864,6 @@ class AutoForm(QMainWindow):
                 f"Không thể lưu hoặc đóng tài liệu Word:\n{str(e)}"
             )
 
-
     def get_template_variables_in_order(self, path):
 
         document = WordDocument(path)
@@ -399,18 +896,229 @@ class AutoForm(QMainWindow):
 
         return variables
     
-    def select_templates(self):
+    def verify_template_manager(self):
+        stored = database.get_setting("template_manager_password")
+        if stored is None:
+            password, ok = QInputDialog.getText(self, "Thiết lập mật khẩu", "Đặt mật khẩu quản trị (tối thiểu 6 ký tự):", QLineEdit.EchoMode.Password)
+            if not ok or len(password) < 6:
+                QMessageBox.warning(self,"Mật khẩu","Mật khẩu phải có ít nhất 6 ký tự.")
+                return False
+            confirm, ok = QInputDialog.getText(self,"Xác nhận","Nhập lại mật khẩu:",QLineEdit.EchoMode.Password)
+            if not ok or password != confirm:
+                QMessageBox.warning(self,"Mật khẩu","Hai mật khẩu không khớp.")
+                return False
+            salt = secrets.token_hex(16)
+            digest = hashlib.pbkdf2_hmac("sha256",password.encode(),bytes.fromhex(salt),200000).hex()
+            database.set_setting("template_manager_password",salt+":"+digest)
+            return True
+        password, ok = QInputDialog.getText(self,"Xác thực quản trị","Mật khẩu quản trị:",QLineEdit.EchoMode.Password)
+        if not ok:
+            return False
+        try:
+            salt,digest = stored.split(":",1)
+            actual = hashlib.pbkdf2_hmac("sha256",password.encode(),bytes.fromhex(salt),200000).hex()
+            valid = secrets.compare_digest(actual,digest)
+        except (ValueError,TypeError):
+            valid = False
+        if not valid:
+            QMessageBox.warning(self,"Từ chối","Mật khẩu không chính xác.")
+        return valid
 
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Chọn các biểu mẫu Word",
-            "",
-            "Word Files (*.docx)"
-        )
-
-        if not paths:
+    def open_template_manager(self):
+        if not self.verify_template_manager():
             return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Quản lý thư viện biểu mẫu")
+        dialog.resize(850,520)
+        root = QVBoxLayout(dialog)
+        columns = QHBoxLayout()
+        root.addLayout(columns)
+        left = QVBoxLayout()
+        right = QVBoxLayout()
+        columns.addLayout(left,1)
+        columns.addLayout(right,2)
+        left.addWidget(QLabel("DANH MỤC"))
+        category_list = QListWidget()
+        left.addWidget(category_list)
+        right.addWidget(QLabel("BIỂU MẪU WORD"))
+        template_list = QListWidget()
+        right.addWidget(template_list)
 
+        def current_category():
+            item = category_list.currentItem()
+            return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+        def current_template():
+            item = template_list.currentItem()
+            return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+        def refresh_templates():
+            template_list.clear()
+            cid = current_category()
+            if cid is None:
+                return
+            for tid,_,name,path in database.get_templates(cid):
+                item = QListWidgetItem(name + (" ⚠ Thiếu tệp" if not os.path.isfile(path) else ""))
+                item.setData(Qt.ItemDataRole.UserRole,(tid,name,path))
+                template_list.addItem(item)
+
+        def refresh_categories(select_id=None):
+            category_list.clear()
+            for cid,name in database.get_template_categories():
+                item = QListWidgetItem(name)
+                item.setData(Qt.ItemDataRole.UserRole,cid)
+                category_list.addItem(item)
+                if cid == select_id:
+                    category_list.setCurrentItem(item)
+            if category_list.currentItem() is None and category_list.count():
+                category_list.setCurrentRow(0)
+            refresh_templates()
+
+        def run_action(callback):
+            try:
+                callback()
+            except (sqlite3.Error,OSError,ValueError) as exc:
+                QMessageBox.critical(dialog,"Không thể thực hiện",str(exc))
+
+        def add_category():
+            name,ok = QInputDialog.getText(dialog,"Thêm danh mục","Tên danh mục:")
+            if ok and name.strip():
+                database.add_template_category(name.strip())
+                refresh_categories()
+
+        def rename_category():
+            cid=current_category()
+            if cid is None:return
+            name,ok=QInputDialog.getText(dialog,"Đổi tên danh mục","Tên mới:",text=category_list.currentItem().text())
+            if ok and name.strip():
+                database.rename_template_category(cid,name.strip())
+                refresh_categories(cid)
+
+        def delete_category():
+            cid=current_category()
+            if cid is None:return
+            if QMessageBox.question(dialog,"Xóa danh mục","Xóa danh mục và các mục biểu mẫu bên trong khỏi cơ sở dữ liệu? Tệp Word vẫn được giữ trên ổ đĩa.") == QMessageBox.StandardButton.Yes:
+                database.delete_template_category(cid)
+                refresh_categories()
+
+        def add_word():
+            cid=current_category()
+            if cid is None:
+                QMessageBox.warning(dialog,"Thiếu danh mục","Hãy tạo hoặc chọn một danh mục trước.")
+                return
+            paths,_=QFileDialog.getOpenFileNames(dialog,"Thêm biểu mẫu Word","","Word (*.docx)")
+            if not paths:return
+            folder=os.path.join(TEMPLATE_LIBRARY_DIR,str(cid))
+            os.makedirs(folder,exist_ok=True)
+            errors=[]
+            for path in paths:
+                name=os.path.basename(path)
+                if any(row[2]==name for row in database.get_templates(cid)):
+                    errors.append(name+": đã tồn tại trong danh mục")
+                    continue
+                dest=os.path.join(folder,uuid.uuid4().hex+"_"+name)
+                try:
+                    shutil.copy2(path,dest)
+                    database.add_template(cid,name,dest)
+                except (OSError,sqlite3.Error) as exc:
+                    errors.append(name+": "+str(exc))
+            refresh_templates()
+            if errors:QMessageBox.warning(dialog,"Một số tệp chưa thêm được","\n".join(errors))
+
+        def rename_word():
+            item=current_template()
+            if not item:return
+            tid,name,path=item
+            new_name,ok=QInputDialog.getText(dialog,"Đổi tên biểu mẫu","Tên hiển thị:",text=name)
+            if ok and new_name.strip():
+                database.rename_template(tid,new_name.strip())
+                refresh_templates()
+
+        def replace_word():
+            item=current_template()
+            if not item:return
+            tid,name,old_path=item
+            source,_=QFileDialog.getOpenFileName(dialog,"Chọn tệp Word thay thế","","Word (*.docx)")
+            if not source:return
+            folder=os.path.join(TEMPLATE_LIBRARY_DIR,str(current_category()))
+            os.makedirs(folder,exist_ok=True)
+            dest=os.path.join(folder,uuid.uuid4().hex+"_"+os.path.basename(source))
+            shutil.copy2(source,dest)
+            database.replace_template_file(tid,dest)
+            refresh_templates()
+
+        def delete_word():
+            item=current_template()
+            if not item:return
+            tid,name,path=item
+            if QMessageBox.question(dialog,"Xóa khỏi thư viện",f"Xóa '{name}' khỏi thư viện?\nTệp Word trên ổ đĩa sẽ KHÔNG bị xóa.") == QMessageBox.StandardButton.Yes:
+                database.delete_template(tid)
+                refresh_templates()
+
+        def add_button(layout,title,action):
+            button=QPushButton(title)
+            button.clicked.connect(lambda checked=False:run_action(action))
+            layout.addWidget(button)
+
+        add_button(left,"+ Thêm danh mục",add_category)
+        add_button(left,"Đổi tên danh mục",rename_category)
+        add_button(left,"Xóa danh mục",delete_category)
+        add_button(right,"+ Thêm Word",add_word)
+        add_button(right,"Đổi tên biểu mẫu",rename_word)
+        add_button(right,"Thay thế tệp Word",replace_word)
+        add_button(right,"Xóa khỏi thư viện (giữ tệp)",delete_word)
+        category_list.currentItemChanged.connect(lambda *_:refresh_templates())
+        close=QPushButton("Đóng")
+        close.clicked.connect(dialog.accept)
+        root.addWidget(close)
+        refresh_categories()
+        dialog.exec()
+
+    def select_templates(self):
+        categories = database.get_template_categories()
+        if not categories:
+            QMessageBox.information(self, "Thư viện trống", "Chưa có danh mục. Hãy mở Quản lý thư viện để thêm biểu mẫu.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Chọn biểu mẫu trong thư viện")
+        dialog.resize(650, 480)
+        layout = QVBoxLayout(dialog)
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+        choices = []
+        for category_id, category_name in categories:
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            for template_id, _, name, path in database.get_templates(category_id):
+                checkbox = QCheckBox(name)
+                checkbox.setEnabled(os.path.isfile(path))
+                if not os.path.isfile(path):
+                    checkbox.setText(name + " (không tìm thấy tệp)")
+                content_layout.addWidget(checkbox)
+                choices.append((checkbox, path, name))
+            content_layout.addStretch()
+            scroll.setWidget(content)
+            page_layout.addWidget(scroll)
+            tabs.addTab(page, category_name)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = [(path,name) for checkbox,path,name in choices if checkbox.isChecked()]
+        if not selected:
+            QMessageBox.information(self,"Thông báo","Hãy đánh dấu ít nhất một biểu mẫu.")
+            return
+        paths = [p for p,n in selected]
+        names = {p:n for p,n in selected}
+        self.load_template_paths(paths,names)
+
+    def load_template_paths(self, paths, names):
         self.template_paths = paths
         self.file_list.clear()
 
@@ -444,9 +1152,9 @@ class AutoForm(QMainWindow):
                         all_variables.append(field)
                         seen_variables.add(field)
 
-                self.file_list.addItem(
-                    os.path.basename(path)
-                )
+                item = QListWidgetItem(names.get(path, os.path.basename(path)))
+                item.setData(Qt.ItemDataRole.UserRole, path)
+                self.file_list.addItem(item)
 
             except Exception as e:
                 errors.append(
@@ -498,14 +1206,136 @@ class AutoForm(QMainWindow):
             )
 
 
-
-    # LẤY DỮ LIỆU ĐANG NHẬP
+    # LẤY VÀ CHUẨN HÓA DỮ LIỆU ĐANG NHẬP
     def collect_data(self):
 
-        return {
-            key: widget.text()
-            for key, widget in self.fields.items()
-        }
+        data = {}
+
+        for key, widget in self.fields.items():
+
+            value = widget.text().strip()
+
+            # Chuẩn hóa khoảng trắng trong họ tên
+            if key in ("HO_TEN", "TEN", "HOTEN"):
+                value = " ".join(value.split())
+
+            data[key] = value
+
+        return data
+
+
+    # KIỂM TRA TÍNH HỢP LỆ CỦA DỮ LIỆU
+    def validate_data(self, data):
+
+        errors = []
+
+        # Kiểm tra số CCCD
+        cccd = data.get("CCCD", "").strip()
+
+        if cccd and not re.fullmatch(r"[0-9]{12}", cccd):
+            errors.append(
+                "Số CCCD phải gồm đúng 12 chữ số."
+            )
+
+        # Kiểm tra số điện thoại
+        phone_keys = (
+            "SO_DIEN_THOAI",
+            "SDT",
+            "DIEN_THOAI"
+        )
+
+        for key in phone_keys:
+
+            phone = data.get(key, "").strip()
+
+            if phone and not re.fullmatch(r"[0-9]{10}", phone):
+                errors.append(
+                    f"{FIELD_LABELS.get(key, key)} "
+                    "phải gồm đúng 10 chữ số."
+                )
+
+        # Kiểm tra họ tên: không được chứa chữ số
+        name_keys = ("HO_TEN", "TEN", "HOTEN")
+
+        for key in name_keys:
+
+            full_name = data.get(key, "").strip()
+
+            if full_name and re.search(r"[0-9]", full_name):
+                errors.append(
+                    f"{FIELD_LABELS.get(key, key)} "
+                    "không được chứa chữ số."
+                )
+
+        # Kiểm tra ngày tháng
+        date_keys = ("NGAY_SINH", "NGAY_CAP")
+
+        for key in date_keys:
+
+            date_value = data.get(key, "").strip()
+
+            if date_value:
+
+                try:
+                    if not re.fullmatch(
+                        r"[0-9]{2}/[0-9]{2}/[0-9]{4}",
+                        date_value
+                    ):
+                        raise ValueError
+
+                    datetime.strptime(
+                        date_value,
+                        "%d/%m/%Y"
+                    )
+
+                except ValueError:
+                    errors.append(
+                        f"{FIELD_LABELS.get(key, key)} "
+                        "phải đúng định dạng dd/MM/yyyy "
+                        "và là ngày hợp lệ."
+                    )
+
+        # Kiểm tra email nếu biểu mẫu có trường EMAIL
+        email = data.get("EMAIL", "").strip()
+
+        if email and not re.fullmatch(
+            r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+            email
+        ):
+            errors.append(
+                "Email không đúng định dạng."
+            )
+
+        return errors
+
+    # KIỂM TRA TRƯỚC KHI THỰC HIỆN THAO TÁC
+    def check_form_data(self):
+
+        data = self.collect_data()
+        errors = self.validate_data(data)
+
+        if errors:
+
+            message = (
+                "Dữ liệu nhập vào chưa hợp lệ:\n\n"
+                + "\n".join(
+                    f"• {error}" for error in errors
+                )
+                + "\n\nVui lòng kiểm tra và sửa lại."
+            )
+
+            QMessageBox.warning(
+                self,
+                "Dữ liệu không hợp lệ",
+                message
+            )
+
+            return False
+
+        return True
+
+
+
 
     # CẬP NHẬT DANH SÁCH HỒ SƠ
     def refresh_profiles(self):
@@ -613,6 +1443,9 @@ class AutoForm(QMainWindow):
             return
 
         # Lấy toàn bộ dữ liệu đang hiển thị
+        if not self.check_form_data():
+            return
+
         data = self.collect_data()
 
         # Kiểm tra họ tên
@@ -669,7 +1502,8 @@ class AutoForm(QMainWindow):
                 "Bạn cần chọn biểu mẫu và nhập thông tin trước."
             )
             return
-
+        if not self.check_form_data():
+            return
         data = self.collect_data()
 
         # Bổ sung tên hồ sơ từ dữ liệu đang nhập
@@ -809,12 +1643,13 @@ class AutoForm(QMainWindow):
         filename = selected_item.text()
 
         # Tìm đường dẫn tương ứng
-        template_path = None
+        template_path = selected_item.data(Qt.ItemDataRole.UserRole)
 
-        for path in self.template_paths:
-            if os.path.basename(path) == filename:
-                template_path = path
-                break
+        if not template_path:
+            for path in self.template_paths:
+                if os.path.basename(path) == filename:
+                    template_path = path
+                    break
 
         if not template_path:
             QMessageBox.warning(
@@ -823,7 +1658,8 @@ class AutoForm(QMainWindow):
                 "Không tìm thấy đường dẫn biểu mẫu."
             )
             return
-
+        if not self.check_form_data():
+            return
         try:
 
             # Thu thập dữ liệu hiện tại
@@ -970,7 +1806,9 @@ class AutoForm(QMainWindow):
                 "Bạn chưa chọn biểu mẫu Word!"
             )
             return
-
+        
+        if not self.check_form_data():
+            return
         data = self.collect_data()
 
         os.makedirs(OUTPUT_DIR, exist_ok=True)
